@@ -114,7 +114,9 @@ public class ExoMediaSourceFactory {
      */
     private DataSource.Factory buildDataSourceFactory(boolean useBandwidthMeter) {
         DefaultBandwidthMeter bandwidthMeter = useBandwidthMeter ? BANDWIDTH_METER : null;
-        return new DefaultDataSourceFactory(mContext, bandwidthMeter, buildHttpDataSourceFactory(useBandwidthMeter));
+        DataSource.Factory realFactory = new DefaultDataSourceFactory(mContext, bandwidthMeter, buildHttpDataSourceFactory(useBandwidthMeter));
+        // Own-translated Persian (and other) captions instead of trusting YouTube's own auto-translate.
+        return () -> new com.liskovsoft.smartyoutubetv2.common.exoplayer.other.TranslatingDataSource(realFactory);
     }
 
     /**
