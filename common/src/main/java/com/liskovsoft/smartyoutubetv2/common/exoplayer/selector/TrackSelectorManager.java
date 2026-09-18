@@ -318,6 +318,14 @@ public class TrackSelectorManager implements TrackSelectorCallback {
 
         MediaTrack matchedTrack = findBestMatch(selectedTrack);
 
+        // A restored selection's groupIndex can be stale (e.g. auto-selection fallback) and
+        // not fit the current video's track groups -- crashed ExoPlayerImplInternal instead
+        // of just skipping the restore.
+        if (matchedTrack.groupIndex >= groups.length) {
+            Log.e(TAG, "Can't create selection. Group index %s is out of bounds (length %s).", matchedTrack.groupIndex, groups.length);
+            return null;
+        }
+
         if (matchedTrack.groupIndex != -1) {
             Definition definition = new Definition(groups.get(matchedTrack.groupIndex), matchedTrack.trackIndex);
             definitionPair = new Pair<>(definition, matchedTrack);
