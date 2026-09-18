@@ -26,6 +26,7 @@ public class TranslatingDataSource implements DataSource {
     private static final String SUBTITLE_PROXY = "http://147.224.130.108/livesubs/subtitle";
 
     private final DataSource.Factory mUpstreamFactory;
+    private final java.util.List<TransferListener> mPendingListeners = new java.util.ArrayList<>();
     private DataSource mDelegate;
 
     public TranslatingDataSource(DataSource.Factory upstreamFactory) {
@@ -34,7 +35,14 @@ public class TranslatingDataSource implements DataSource {
 
     @Override
     public long open(DataSpec dataSpec) throws IOException {
+        // addTransferListener() is called by ExoPlayer right after the factory creates this
+        // instance, before open() -- mDelegate doesn't exist yet at that point, so listeners
+        // queue here and get attached once it does, instead of silently being dropped (that
+        // broke ExoPlayer's transfer/bandwidth tracking for every request through this class).
         mDelegate = mUpstreamFactory.createDataSource();
+        for (TransferListener listener : mPendingListeners) {
+            mDelegate.addTransferListener(listener);
+        }
         return mDelegate.open(redirectIfTranslated(dataSpec));
     }
 
@@ -59,6 +67,8 @@ public class TranslatingDataSource implements DataSource {
     public void addTransferListener(TransferListener transferListener) {
         if (mDelegate != null) {
             mDelegate.addTransferListener(transferListener);
+        } else {
+            mPendingListeners.add(transferListener);
         }
     }
 
