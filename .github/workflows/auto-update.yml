@@ -1,0 +1,86 @@
+name: Auto-update SmartTube (Persian subtitles patch)
+
+# Mirrors update-smarttube.sh: find the latest yuliskov/SmartTube release, cherry-pick
+# the Persian-subtitle patch (commit 16f849e) onto it, build, and publish the APK as
+# a GitHub Release -- so there's always a stable "latest" download link. Does NOT
+# install anything on any device; that part stays manual (adb install from the link).
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily, 06:00 UTC
+  workflow_dispatch: {}    # manual "Run workflow" button, for testing
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Find latest upstream release
+        id: upstream
+        run: |
+          git remote add upstream https://github.com/yuliskov/SmartTube.git
+          TAG=$(git ls-remote --tags --refs upstream \
+                | sed 's#.*refs/tags/##' \
+                | grep -E '^[0-9]+\.[0-9]+$' \
+                | sort -t. -k1,1n -k2,2n \
+                | tail -1)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "latest upstream release: $TAG"
+
+      - name: Check if already built
+        id: check
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          if git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "persian-subs-$TAG already exists -- nothing to do"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the patched branch
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          git fetch --depth 1 upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
+          git checkout -b "persian-subs-$TAG" "upstream-$TAG"
+          git config user.email "actions@github.com"
+          git config user.name "SmartTube auto-update"
+          # If this stops applying cleanly, upstream changed buildDataSourceFactory():
+          # the workflow fails here on purpose rather than publish a broken build --
+          # re-add the 3-line hook there by hand (see update-smarttube.sh's own comment),
+          # push the fixed branch, then re-run this workflow.
+          git cherry-pick 16f849e
+          git submodule update --init --recursive
+
+      - name: Gradle build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          chmod +x gradlew
+          ./gradlew :smarttubetv:assembleStstableDebug --no-daemon
+
+      - name: Push the new branch
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          git push origin "persian-subs-$TAG"
+
+      - name: Publish release with the APK
+        if: steps.check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "persian-subs-${{ steps.upstream.outputs.tag }}"
+          name: "SmartTube ${{ steps.upstream.outputs.tag }} + Persian subtitles"
+          files: smarttubetv/build/outputs/apk/ststable/debug/*.apk
