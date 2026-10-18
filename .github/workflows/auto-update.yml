@@ -8,7 +8,12 @@ name: Auto-update SmartTube (Persian subtitles patch)
 on:
   schedule:
     - cron: '0 6 * * *'   # daily, 06:00 UTC
-  workflow_dispatch: {}    # manual "Run workflow" button, for testing
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild+republish even if this tag was already released'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
