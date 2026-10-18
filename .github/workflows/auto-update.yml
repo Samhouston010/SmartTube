@@ -66,8 +66,12 @@ jobs:
           git config user.name "SmartTube auto-update"
           if git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
             echo "persian-subs-$TAG already exists on origin (likely hand-resolved after a conflict) -- using it as-is"
-            git fetch origin "persian-subs-$TAG"
-            git checkout "persian-subs-$TAG"
+            # explicit refs/heads fetch + checkout -B origin/<branch>: the release step below
+            # creates a TAG with this exact same name, and a plain "git checkout persian-subs-$TAG"
+            # resolves that ambiguously (picked the tag once, landing on the wrong commit in
+            # detached HEAD) -- this leaves no room for that.
+            git fetch origin "refs/heads/persian-subs-$TAG:refs/remotes/origin/persian-subs-$TAG"
+            git checkout -B "persian-subs-$TAG" "origin/persian-subs-$TAG"
           else
             git fetch --depth 1 upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
             git checkout -b "persian-subs-$TAG" "upstream-$TAG"
