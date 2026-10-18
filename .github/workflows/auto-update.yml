@@ -75,16 +75,59 @@ jobs:
           fi
           git submodule update --init --recursive
 
+      # The in-app update checker (common/.../AppUpdateChecker) compares versionCode, which
+      # build.gradle otherwise leaves fixed at whatever upstream last committed (2380) -- every
+      # one of our builds would look like the SAME version forever and the app would never
+      # offer the update. Derive a real, increasing versionCode from the tag itself instead:
+      # "32.68" -> 32068, "32.47s" -> 32047 (trailing letters stripped). Also set versionName to
+      # the real tag so Settings > About shows something meaningful, not the upstream default.
+      - name: Set versionCode/versionName from the tag
+        if: steps.check.outputs.exists == 'false'
+        id: ver
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          MAJOR="${TAG%%.*}"
+          MINOR_RAW="${TAG#*.}"
+          MINOR=$(echo "$MINOR_RAW" | grep -o '^[0-9]*')
+          CODE=$((MAJOR * 1000 + MINOR))
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          sed -i "s/versionCode [0-9]\+/versionCode $CODE/" smarttubetv/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$TAG\"/" smarttubetv/build.gradle
+          grep -E "versionCode|versionName" smarttubetv/build.gradle | head -2
+
       - name: Gradle build
         if: steps.check.outputs.exists == 'false'
         run: |
           chmod +x gradlew
           ./gradlew :smarttubetv:assembleStstableDebug --no-daemon
 
-      - name: Publish release with the APK
+      # Matches the format AppVersionChecker.java expects (see its class javadoc): a "package"
+      # key with the APK url, plus one entry per version. "latest" release + a fixed filename
+      # (update_urls.xml points at .../releases/latest/download/update.json) means the app
+      # always resolves to whatever this step last published, no per-tag URL juggling needed.
+      - name: Build the update.json manifest
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          CODE="${{ steps.ver.outputs.code }}"
+          APK_URL="https://github.com/${{ github.repository }}/releases/download/persian-subs-$TAG/SmartTube_stable_${TAG}_armeabi-v7a.apk"
+          cat > update.json <<JSON
+          {
+            "package": { "downloadUrl": "$APK_URL" },
+            "$TAG": {
+              "versionCode": $CODE,
+              "changelog": ["Upstream $TAG", "Persian subtitles translated server-side (not YouTube's own auto-translate)"]
+            }
+          }
+          JSON
+          cat update.json
+
+      - name: Publish release with the APK + update manifest
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "persian-subs-${{ steps.upstream.outputs.tag }}"
           name: "SmartTube ${{ steps.upstream.outputs.tag }} + Persian subtitles"
-          files: smarttubetv/build/outputs/apk/ststable/debug/*.apk
+          files: |
+            smarttubetv/build/outputs/apk/ststable/debug/*.apk
+            update.json

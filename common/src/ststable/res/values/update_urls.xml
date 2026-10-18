@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="update_urls">
-        <item>https://github.com/yuliskov/SmartTubeNext/releases/download/latest/smarttube_stable2.json</item>
+        <!-- owner's own fork + Persian-subtitles patch, auto-built by .github/workflows/auto-update.yml
+             whenever upstream releases a new version -- "latest" always resolves to the newest release's asset -->
+        <item>https://github.com/Samhouston010/SmartTube/releases/latest/download/update.json</item>
     </string-array>
 </resources>
