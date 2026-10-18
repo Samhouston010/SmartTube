@@ -39,30 +39,40 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "latest upstream release: $TAG"
 
-      - name: Check if already built
+      - name: Check if already released
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.upstream.outputs.tag }}"
-          if git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
+          FORCE="${{ github.event.inputs.force }}"
+          if [ "$FORCE" != "true" ] && gh release view "persian-subs-$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "persian-subs-$TAG already exists -- nothing to do"
+            echo "persian-subs-$TAG already released -- nothing to do"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build the patched branch
+      - name: Get the patched branch (reuse if it already exists, else create it)
         if: steps.check.outputs.exists == 'false'
         run: |
           TAG="${{ steps.upstream.outputs.tag }}"
-          git fetch --depth 1 upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
-          git checkout -b "persian-subs-$TAG" "upstream-$TAG"
           git config user.email "actions@github.com"
           git config user.name "SmartTube auto-update"
-          # If this stops applying cleanly, upstream changed buildDataSourceFactory():
-          # the workflow fails here on purpose rather than publish a broken build --
-          # re-add the 3-line hook there by hand (see update-smarttube.sh's own comment),
-          # push the fixed branch, then re-run this workflow.
-          git cherry-pick 16f849e
+          if git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
+            echo "persian-subs-$TAG already exists on origin (likely hand-resolved after a conflict) -- using it as-is"
+            git fetch origin "persian-subs-$TAG"
+            git checkout "persian-subs-$TAG"
+          else
+            git fetch --depth 1 upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
+            git checkout -b "persian-subs-$TAG" "upstream-$TAG"
+            # If this stops applying cleanly, upstream changed buildDataSourceFactory():
+            # the workflow fails here on purpose rather than publish a broken build --
+            # re-add the 3-line hook there by hand (see update-smarttube.sh's own comment),
+            # push the fixed branch, then re-run this workflow (it will reuse that branch).
+            git cherry-pick 16f849e
+            git push origin "persian-subs-$TAG"
+          fi
           git submodule update --init --recursive
 
       - name: Gradle build
@@ -70,12 +80,6 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :smarttubetv:assembleStstableDebug --no-daemon
-
-      - name: Push the new branch
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          TAG="${{ steps.upstream.outputs.tag }}"
-          git push origin "persian-subs-$TAG"
 
       - name: Publish release with the APK
         if: steps.check.outputs.exists == 'false'
