@@ -84,6 +84,16 @@ jobs:
           fi
           git submodule update --init --recursive
 
+      # The cherry-picked patch (16f849e) only carries the subtitle-fetch change -- it predates
+      # this fork's self-update setup, so a branch built straight from upstream-$TAG still ships
+      # upstream's own update_urls.xml (checks yuliskov/SmartTube, loses this patch on the next
+      # in-app update). Overwrite it every run instead of relying on it surviving the cherry-pick.
+      - name: Point self-update at this fork
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          sed -i "s#<item>.*</item>#<item>https://github.com/${{ github.repository }}/releases/latest/download/update.json</item>#" common/src/ststable/res/values/update_urls.xml
+          cat common/src/ststable/res/values/update_urls.xml
+
       # The in-app update checker (common/.../AppUpdateChecker) compares versionCode, which
       # build.gradle otherwise leaves fixed at whatever upstream last committed (2380) -- every
       # one of our builds would look like the SAME version forever and the app would never
