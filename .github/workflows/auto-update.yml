@@ -1,9 +1,9 @@
 name: Auto-update SmartTube (Persian subtitles patch)
 
-# Mirrors update-smarttube.sh: find the latest yuliskov/SmartTube release, cherry-pick
-# the Persian-subtitle patch (commit 16f849e) onto it, build, and publish the APK as
-# a GitHub Release -- so there's always a stable "latest" download link. Does NOT
-# install anything on any device; that part stays manual (adb install from the link).
+# Find the latest yuliskov/SmartTube release, apply the Persian-subtitle patch + small fixes
+# (patches/apply-patch.py), build, sign with the SAME key every time, and publish
+# the APK + update.json as the "latest" GitHub Release -- the app's own updater (and
+# deploy-to-attbox.ps1) pick it up from there.
 
 on:
   schedule:
@@ -14,6 +14,10 @@ on:
         description: 'Rebuild+republish even if this tag was already released'
         type: boolean
         default: false
+      fresh:
+        description: 'Ignore an existing persian-subs-<tag> branch and rebuild it from upstream + patch'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,6 +25,8 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,6 +37,20 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      # Every build MUST be signed with the same key as the app already installed on the TV,
+      # or Android refuses the update ("App not installed"). Without this, each CI run signed
+      # with a brand-new random debug key. Fail loudly instead of publishing an uninstallable APK.
+      - name: Require the signing key
+        run: |
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::error::SIGNING_KEY secret is missing -- run setup-signing.ps1 once on the Windows PC"
+            exit 1
+          fi
+
+      # The patch helpers live on master; keep a copy before switching to the release branch.
+      - name: Keep patch helpers
+        run: cp -r patches "$RUNNER_TEMP/patches"
 
       - name: Find latest upstream release
         id: upstream
@@ -62,44 +82,48 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           TAG="${{ steps.upstream.outputs.tag }}"
+          FRESH="${{ github.event.inputs.fresh }}"
           git config user.email "actions@github.com"
           git config user.name "SmartTube auto-update"
-          if git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
+          if [ "$FRESH" != "true" ] && git ls-remote --exit-code --heads origin "persian-subs-$TAG" >/dev/null 2>&1; then
             echo "persian-subs-$TAG already exists on origin (likely hand-resolved after a conflict) -- using it as-is"
-            # explicit refs/heads fetch + checkout -B origin/<branch>: the release step below
-            # creates a TAG with this exact same name, and a plain "git checkout persian-subs-$TAG"
-            # resolves that ambiguously (picked the tag once, landing on the wrong commit in
-            # detached HEAD) -- this leaves no room for that.
+            # explicit refs/heads fetch + checkout -B: a TAG with this same name exists too.
             git fetch origin "refs/heads/persian-subs-$TAG:refs/remotes/origin/persian-subs-$TAG"
             git checkout -B "persian-subs-$TAG" "origin/persian-subs-$TAG"
           else
             git fetch --depth 1 upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
-            git checkout -b "persian-subs-$TAG" "upstream-$TAG"
-            # If this stops applying cleanly, upstream changed buildDataSourceFactory():
-            # the workflow fails here on purpose rather than publish a broken build --
-            # re-add the 3-line hook there by hand (see update-smarttube.sh's own comment),
-            # push the fixed branch, then re-run this workflow (it will reuse that branch).
-            git cherry-pick 16f849e
-            git push origin "persian-subs-$TAG"
+            git checkout -B "persian-subs-$TAG" "upstream-$TAG"
+            # Anchor-based, not a cherry-pick: survives upstream editing the lines around the hook.
+            # Fails here on purpose (no release) if the Persian-subtitle hook can't be placed --
+            # then add it by hand, push the branch, and re-run (it reuses that branch).
+            python3 "$RUNNER_TEMP/patches/apply-patch.py"
+            git add -A common
+            git commit -m "Persian subtitles from our own server + track-restore fix, on top of $TAG"
+            git push --force origin "refs/heads/persian-subs-$TAG:refs/heads/persian-subs-$TAG"
           fi
           git submodule update --init --recursive
 
-      # The cherry-picked patch (16f849e) only carries the subtitle-fetch change -- it predates
-      # this fork's self-update setup, so a branch built straight from upstream-$TAG still ships
-      # upstream's own update_urls.xml (checks yuliskov/SmartTube, loses this patch on the next
-      # in-app update). Overwrite it every run instead of relying on it surviving the cherry-pick.
+      # Idempotent: on a reused/hand-fixed branch it only adds what's missing.
+      - name: Apply patch (idempotent)
+        if: steps.check.outputs.exists == 'false'
+        run: python3 "$RUNNER_TEMP/patches/apply-patch.py"
+
+      - name: Make sure the Persian-subtitle hook is in this build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          test -f common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/other/TranslatingDataSource.java
+          grep -q "TranslatingDataSource" common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/ExoMediaSourceFactory.java
+
+      # A branch built straight from upstream ships upstream's update_urls.xml (checks
+      # yuliskov/SmartTube and would lose this patch on the next in-app update). Overwrite it.
       - name: Point self-update at this fork
         if: steps.check.outputs.exists == 'false'
         run: |
           sed -i "s#<item>.*</item>#<item>https://github.com/${{ github.repository }}/releases/latest/download/update.json</item>#" common/src/ststable/res/values/update_urls.xml
           cat common/src/ststable/res/values/update_urls.xml
 
-      # The in-app update checker (common/.../AppUpdateChecker) compares versionCode, which
-      # build.gradle otherwise leaves fixed at whatever upstream last committed (2380) -- every
-      # one of our builds would look like the SAME version forever and the app would never
-      # offer the update. Derive a real, increasing versionCode from the tag itself instead:
-      # "32.68" -> 32068, "32.47s" -> 32047 (trailing letters stripped). Also set versionName to
-      # the real tag so Settings > About shows something meaningful, not the upstream default.
+      # Real, increasing versionCode from the tag: "32.68" -> 32068 (always above upstream's own
+      # ~2xxx codes, so it also updates over the hand-built 32.68.1 = 2459).
       - name: Set versionCode/versionName from the tag
         if: steps.check.outputs.exists == 'false'
         id: ver
@@ -114,16 +138,44 @@ jobs:
           sed -i "s/versionName \"[^\"]*\"/versionName \"$TAG\"/" smarttubetv/build.gradle
           grep -E "versionCode|versionName" smarttubetv/build.gradle | head -2
 
+      # build.gradle signs debug builds with this keystore whenever keystore.properties exists.
+      - name: Configure signing
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > "$RUNNER_TEMP/key.jks"
+          {
+            echo "storePassword=${{ secrets.KEY_STORE_PASSWORD }}"
+            echo "keyAlias=${{ secrets.ALIAS }}"
+            echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
+            echo "storeFile=$RUNNER_TEMP/key.jks"
+          } > keystore.properties
+
       - name: Gradle build
         if: steps.check.outputs.exists == 'false'
         run: |
           chmod +x gradlew
           ./gradlew :smarttubetv:assembleStstableDebug --no-daemon
 
-      # Matches the format AppVersionChecker.java expects (see its class javadoc): a "package"
-      # key with the APK url, plus one entry per version. "latest" release + a fixed filename
-      # (update_urls.xml points at .../releases/latest/download/update.json) means the app
-      # always resolves to whatever this step last published, no per-tag URL juggling needed.
+      # Last guard: the new APK must carry the signature of the SmartTube installed on the TV
+      # (fingerprint read from the TV's own APK on 2026-10-24). Any other key = Android refuses the
+      # update, so stop instead of publishing it.
+      - name: Verify signature matches the TV's install
+        if: steps.check.outputs.exists == 'false'
+        env:
+          EXPECTED_CERT: "7D:C0:6A:2A:53:12:DD:76:D0:9E:24:61:17:B2:CB:94:55:E6:48:E1:B1:96:3E:F7:9D:17:38:35:C0:11:79:25"
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          NEW_APK="smarttubetv/build/outputs/apk/ststable/debug/SmartTube_stable_${TAG}_armeabi-v7a.apk"
+          ls -la smarttubetv/build/outputs/apk/ststable/debug/
+          test -f "$NEW_APK"
+          NEW=$(keytool -printcert -jarfile "$NEW_APK" | grep -m1 'SHA256:' | awk '{print $2}')
+          echo "new APK cert: $NEW"
+          echo "TV cert:      $EXPECTED_CERT"
+          if [ "$NEW" != "$EXPECTED_CERT" ]; then
+            echo "::error::Signature differs from the TV's install -- the TV could not install this update"
+            exit 1
+          fi
+
       - name: Build the update.json manifest
         if: steps.check.outputs.exists == 'false'
         run: |
@@ -146,7 +198,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "persian-subs-${{ steps.upstream.outputs.tag }}"
+          target_commitish: "persian-subs-${{ steps.upstream.outputs.tag }}"
           name: "SmartTube ${{ steps.upstream.outputs.tag }} + Persian subtitles"
+          make_latest: true
           files: |
             smarttubetv/build/outputs/apk/ststable/debug/*.apk
             update.json
