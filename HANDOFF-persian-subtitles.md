@@ -1,90 +1,46 @@
-# SmartTube — Persian subtitle quality: investigation handoff
+# SmartTube — Persian subtitles fork: status & handoff
 
-## Goal
-The user finds Persian subtitles in SmartTube (an open-source, ad-free YouTube client
-for Android TV) low quality, and wants them fixed the way we already fixed live
-Persian subtitles in a different app (Persiana) tonight: by controlling the
-translation step ourselves instead of trusting whatever the platform gives us.
+_Last updated: 2026-10-24_
 
-## Repos
-- **User's fork (start here):** https://github.com/Samhouston010/SmartTube
-  - Forked from upstream, **never modified** — confirmed by the user. Currently
-    marked "archived" on GitHub (that's a repo setting, not a code state; un-archive
-    it or just push to a new branch/fork).
-- **Upstream:** https://github.com/yuliskov/SmartTube
-- Two required git submodules (declared in `settings.gradle`, not yet initialized
-  in the clone below):
-  - `SharedModules` → https://github.com/yuliskov/SharedModules
-  - `MediaServiceCore` → https://github.com/yuliskov/MediaServiceCore
-  - **This second one almost certainly contains the actual fix target** (see below).
+## What this fork does
+Persian (and other auto-translated) captions are **not** taken from YouTube's own
+auto-translate (ASR + YouTube MT stacked, reads badly). Any caption request carrying
+YouTube's `&tlang=` marker is redirected by `TranslatingDataSource` to our own server
+(`http://147.224.130.108/livesubs/subtitle`, subsync/asrlive.py), which fetches the original
+captions, translates them with translate-pa.googleapis.com and returns finished VTT.
+English/untranslated captions and all video/audio requests pass straight through.
 
-## Local clone
-`D:\website\SmartTube` — shallow clone (`--depth 1`) of the user's fork, submodules
-**not yet initialized**. To get a full working tree:
+## Current state
+- TV (AT&T box `10.0.0.53:5555`, package `org.smarttube.stable`) runs **32.68 + Persian subs**,
+  versionCode 32068, installed over 32.47 with settings kept.
+- Signing key: `%USERPROFILE%\.android\debug.keystore` on the Windows PC,
+  SHA256 `7D:C0:6A:2A:53:12:DD:76:D0:9E:24:61:17:B2:CB:94:55:E6:48:E1:B1:96:3E:F7:9D:17:38:35:C0:11:79:25`
+  — the key the TV's install is signed with. Stored in GitHub secrets
+  `SIGNING_KEY` / `KEY_STORE_PASSWORD` / `ALIAS` / `KEY_PASSWORD` (set by `setup-signing.ps1`).
+- Releases `32.68.1` (key 90:36…) and the first CI build of 32.68 (key C7:92…) are signed with
+  other keys and can **not** be installed over the TV's app. Latest release is `persian-subs-32.68`.
+- The repo must stay **public**: the app downloads `update.json` and the APK anonymously.
+
+## Auto-update (`.github/workflows/auto-update.yml`)
+Daily 06:00 UTC, or Actions → Run workflow (`force` = rebuild, `fresh` = rebuild branch from upstream):
+1. Latest upstream tag (`X.Y`); skip if `persian-subs-<tag>` already released.
+2. `patches/apply-patch.py` on the upstream code — anchor-based, idempotent, keeps line endings:
+   - Persian-subtitle hook in `ExoMediaSourceFactory.buildDataSourceFactory` + copies
+     `patches/TranslatingDataSource.java` (**required**: fails the run, no release, if it can't apply);
+   - audio-track restore crash fix in `TrackSelectorManager` (optional: warning if anchor moved).
+3. `update_urls.xml` → this fork's `releases/latest/download/update.json`;
+   versionCode = MAJOR*1000+MINOR (32.68 → 32068).
+4. Build `assembleStstableDebug`, signed with the secret key.
+5. Signature must equal the TV's fingerprint above, else no release.
+6. Publish release (`make_latest`) with APKs + `update.json`; the app offers the update itself.
+
+## If a run fails at "Apply patch"
+Upstream changed `buildDataSourceFactory`. Check out `persian-subs-<tag>`, wrap the returned
+`DefaultDataSourceFactory` in `TranslatingDataSource` by hand, push the branch, re-run the
+workflow (it reuses an existing branch).
+
+## Manual install
 ```
-cd D:\website\SmartTube
-git submodule update --init --recursive
+adb connect 10.0.0.53:5555
+adb -s 10.0.0.53:5555 install -r <apk>
 ```
-(Do this in a stable environment — MediaServiceCore/SharedModules are sizeable.)
-
-## What was confirmed by reading the code (not guessed)
-
-Persian subtitles in SmartTube are **YouTube's own auto-translated caption
-track** — the same "Auto-translate → Persian" option available on youtube.com.
-That means every subtitle line has gone through two lossy machine steps stacked
-on top of each other: YouTube's speech-to-text (for videos without human
-captions), then YouTube's own translation to Persian. This is almost certainly
-why quality feels poor — it's the same text a viewer would get by picking
-auto-translate on the website itself, not something SmartTube generates or can
-tune via its own settings.
-
-Evidence, with exact locations:
-
-- `common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/selector/track/SubtitleTrack.java`
-  — imports `com.liskovsoft.youtubeapi.videoinfo.models.TranslatedCaptionTrack`
-  and checks `language.endsWith(TranslatedCaptionTrack.TRANSLATE_MARKER)` to
-  detect a track that YouTube itself translated (lines ~4, 105–120).
-- `TranslatedCaptionTrack` and however the app requests `tlang=fa` from YouTube
-  live in the **`youtubeapi` Gradle module**, which is supplied by the
-  `MediaServiceCore` submodule (see `common/build.gradle:64`,
-  `settings.gradle`'s `mediaServiceCoreRoot` block). It is **not present** in
-  this shallow, submodule-less clone — a `grep` for `timedtext` or `tlang`
-  across the whole checked-out tree returns nothing, confirming it lives only
-  in that submodule.
-
-What SmartTube **does** already give you, and does not need touching:
-- `common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/other/SubtitleManager.java`
-  — subtitle text size (`getSubtitleScale()`), text/background colour
-  (`SubtitleStyle`, applied in `applyStyle()`), and vertical position
-  (`getSubtitlePosition()` → `setBottomPaddingFraction`). All already
-  user-configurable from Settings → this is rendering, and it is fine.
-- The complaint is about **translation quality**, not size/colour/position.
-
-## The fix, by analogy with tonight's Persiana work
-
-Tonight, for Persiana's live TV, we stopped trusting a free, rate-limited
-translation path and instead: fetched the *original* text (English), sent it
-ourselves to `translate-pa.googleapis.com` (Google Translate's own web engine,
-called with its public site key — same quality as translate.google.com, far
-better than the `clients5.google.com/translate_a/t` "chrome-ex" endpoint or
-YouTube's own auto-translate), and rendered that.
-
-The same shape of fix likely applies here:
-1. In `MediaServiceCore`, find where the app requests a caption track with
-   `tlang=fa` (or wherever `TranslatedCaptionTrack` is constructed) — that is
-   the call handing translation off to YouTube.
-2. Instead, request the **original-language track** (or English auto-captions
-   if the video has no native captions), download its cues, and translate
-   them app-side (or via a small proxy, to control rate limits) using a better
-   engine — e.g. the same `translate-pa.googleapis.com` call used in
-   Persiana's `subsync/asrlive.py` tonight (`translateHtml` endpoint, public
-   site key, HTML-escaped batched lines).
-3. Feed the translated cues into the existing `SubtitleManager`/`SubtitleView`
-   pipeline — no rendering code needs to change.
-
-## What is NOT yet done
-- Submodules are not initialized, so the actual `tlang=fa` / caption-fetch call
-  has not been located or read yet — only inferred from `TranslatedCaptionTrack`'s
-  name and usage in the main repo.
-- No code has been written or changed. This is investigation only, meant to be
-  continued in a separate environment as the user requested.
