@@ -114,6 +114,13 @@ jobs:
           test -f common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/other/TranslatingDataSource.java
           grep -q "TranslatingDataSource" common/src/main/java/com/liskovsoft/smartyoutubetv2/common/exoplayer/ExoMediaSourceFactory.java
 
+      # Same for hold-BACK -> Persiana: no release without it, so the TV keeps the last working version.
+      - name: Make sure the hold-BACK-to-Persiana hook is in this build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          grep -q "mPersianaJumped" common/src/main/java/com/liskovsoft/smartyoutubetv2/common/misc/MotherActivity.java
+          grep -q "com.samhoustonradio.persiana.raw.v2" smarttubetv/src/main/AndroidManifest.xml
+
       # A branch built straight from upstream ships upstream's update_urls.xml (checks
       # yuliskov/SmartTube and would lose this patch on the next in-app update). Overwrite it.
       - name: Point self-update at this fork
