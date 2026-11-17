@@ -7,6 +7,7 @@ hook), each change finds its own anchor and is idempotent -- safe to run twice.
      copies TranslatingDataSource.java next to this script into place and wraps the
      DefaultDataSourceFactory returned by ExoMediaSourceFactory.buildDataSourceFactory().
   2. Audio-track restore crash fix (optional -- skipped with a warning if its anchor moved).
+  3. Hold BACK -> back to Persiana (optional, same rule).
 
 Run from the repo root:  python3 patches/apply-patch.py
 """
@@ -94,6 +95,61 @@ def fix_track_restore_crash():
     print("applied track-restore fix")
 
 
+MOTHER = pathlib.Path("common/src/main/java/com/liskovsoft/smartyoutubetv2/common/misc/MotherActivity.java")
+
+
+def hold_back_to_persiana():
+    """Owner 2026-11-17: holding BACK (~0.8 s) on any SmartTube screen, player included, jumps
+    straight back to Persiana (opened from its «اسمارت تیوب» rail row) instead of many BACK presses.
+    A normal short BACK is untouched."""
+    if not MOTHER.exists():
+        return warn("MotherActivity.java not found; skipped hold-BACK-to-Persiana")
+    src = read(MOTHER)
+    if "mPersianaJumped" in src:
+        return print("hold-BACK-to-Persiana already present")
+    anchor = "if (event == null) { // handled"
+    if src.count(anchor) != 1 or "import android.content.Intent;" not in src:
+        return warn("hold-BACK-to-Persiana anchor moved upstream; skipped")
+    nl = "\r\n" if "\r\n" in src else "\n"
+    start = src.index(anchor)
+    indent = src[src.rfind("\n", 0, start) + 1:start]
+    block_end = src.index(f"{nl}{indent}}}", start) + len(f"{nl}{indent}}}")
+    i = indent
+    hook = nl.join([
+        "",
+        "",
+        f"{i}// Fork: hold BACK ~0.8 s anywhere -> back to Persiana. The rest of the hold (and its UP) is",
+        f"{i}// swallowed so it isn't also a normal BACK.",
+        f"{i}if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {{",
+        f"{i}    if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {{",
+        f"{i}        mPersianaJumped = false;",
+        f"{i}    }} else if (event.getAction() == KeyEvent.ACTION_DOWN && !mPersianaJumped && event.getEventTime() - event.getDownTime() >= 800) {{",
+        f"{i}        mPersianaJumped = true;",
+        f"{i}        for (String pkg : new String[] {{\"com.samhoustonradio.persiana.raw.v2\", \"com.samhoustonradio.persiana.player.v2\"}}) {{",
+        f"{i}            try {{",
+        f"{i}                startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)",
+        f"{i}                        .setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));",
+        f"{i}                break;",
+        f"{i}            }} catch (Exception e) {{",
+        f"{i}                // not installed -- try the next one",
+        f"{i}            }}",
+        f"{i}        }}",
+        f"{i}    }}",
+        f"{i}    if (mPersianaJumped) {{",
+        f"{i}        return true;",
+        f"{i}    }}",
+        f"{i}}}",
+    ])
+    src = src[:block_end] + hook + src[block_end:]
+    field = "private long mLastKeyDownTime;"
+    if src.count(field) != 1:
+        return warn("hold-BACK-to-Persiana field anchor moved upstream; skipped")
+    src = src.replace(field, field + f"{nl}    private boolean mPersianaJumped;", 1)
+    write(MOTHER, src)
+    print("applied hold-BACK-to-Persiana")
+
+
 if __name__ == "__main__":
     apply_persian_subtitles()
     fix_track_restore_crash()
+    hold_back_to_persiana()
