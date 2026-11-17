@@ -149,7 +149,28 @@ def hold_back_to_persiana():
     print("applied hold-BACK-to-Persiana")
 
 
+MANIFEST = pathlib.Path("smarttubetv/src/main/AndroidManifest.xml")
+
+
+def persiana_visible():
+    """Android 11+ hides other apps: without these <queries> the hold-BACK launch fails with
+    'No Activity found to handle Intent' (seen on the Streamer 2026-11-17)."""
+    if not MANIFEST.exists():
+        return warn("smarttubetv AndroidManifest.xml not found; skipped Persiana <queries>")
+    src = read(MANIFEST)
+    if "com.samhoustonradio.persiana.raw.v2" in src:
+        return print("Persiana <queries> already present")
+    if src.count("<queries>") != 1:
+        return warn("<queries> anchor moved upstream; skipped Persiana <queries>")
+    nl = "\r\n" if "\r\n" in src else "\n"
+    pkgs = "".join(f'{nl}        <package android:name="{p}" />'
+                   for p in ("com.samhoustonradio.persiana.raw.v2", "com.samhoustonradio.persiana.player.v2"))
+    write(MANIFEST, src.replace("<queries>", "<queries>" + pkgs, 1))
+    print("applied Persiana <queries>")
+
+
 if __name__ == "__main__":
     apply_persian_subtitles()
     fix_track_restore_crash()
     hold_back_to_persiana()
+    persiana_visible()
