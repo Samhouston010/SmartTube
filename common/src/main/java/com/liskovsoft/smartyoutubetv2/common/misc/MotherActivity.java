@@ -48,6 +48,7 @@ public class MotherActivity extends FragmentActivity {
     private static List<OnPermissions> mOnPermissions;
     private static List<OnResult> mOnResults;
     private long mLastKeyDownTime;
+    private boolean mPersianaJumped;
     private boolean mEnableThrottleKeyDown;
     private boolean mIsOculusQuestFixEnabled;
     private boolean mIsFullscreenModeEnabled;
@@ -133,6 +134,32 @@ public class MotherActivity extends FragmentActivity {
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event == null) { // handled
             return true;
+        }
+
+        // Fork: hold BACK ~0.8 s anywhere -> back to Persiana. The rest of the hold (and its UP) is
+        // swallowed so it isn't also a normal BACK.
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                mPersianaJumped = false;
+            } else if (event.getAction() == KeyEvent.ACTION_DOWN && !mPersianaJumped && event.getEventTime() - event.getDownTime() >= 800) {
+                mPersianaJumped = true;
+                for (String pkg : new String[] {"com.samhoustonradio.persiana.raw.v2", "com.samhoustonradio.persiana.player.v2"}) {
+                    try {
+                        // explicit component from PackageManager: a bare MAIN+LEANBACK_LAUNCHER intent never resolves
+                        // (launcher filters have no CATEGORY_DEFAULT) -> 'No Activity found', result -91
+                        Intent launch = getPackageManager().getLeanbackLaunchIntentForPackage(pkg);
+                        if (launch == null) launch = getPackageManager().getLaunchIntentForPackage(pkg);
+                        if (launch == null) continue;
+                        startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                        break;
+                    } catch (Exception e) {
+                        // not installed -- try the next one
+                    }
+                }
+            }
+            if (mPersianaJumped) {
+                return true;
+            }
         }
 
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
